@@ -4,12 +4,14 @@ import random
 from datetime import datetime
 import os
 from core.advisor import Advisor 
+from core.shirt_color import ShirtColor # <-- เพิ่มการ import
 
 class StateMachine:
     def __init__(self):
         self.STATE_IDLE = "IDLE"           
         self.STATE_DETECTING = "DETECTING" 
         self.STATE_GREETING = "GREETING"   
+        self.STATE_SHIRT_COLOR = "SHIRT_COLOR" # <-- สถานะใหม่
         self.STATE_FORTUNE = "FORTUNE"     
         self.STATE_ADVICE = "ADVICE"       
 
@@ -23,18 +25,17 @@ class StateMachine:
         self.reset_greeting_timeout = 30.0 
         
         self.medicine_reminded = False 
-
         self.score_samples = []      
         self.last_sample_time = 0.0  
         self.fortune_start_time = 0.0 
 
-        # --- เพิ่มตัวแปรสำหรับจำเบอร์และคำทำนายเซียมซี ---
         self.chosen_fortune_id = ""
         self.chosen_fortune_text = ""
 
         self.greetings = self._load_json("data/greetings.json", {})
         self.fortunes = self._load_json("data/fortunes.json", {})
         self.advisor = Advisor()
+        self.shirt_color = ShirtColor() # <-- เรียกใช้ตัวจัดการสีเสื้อ
 
     def _load_json(self, filepath, default_data):
         if os.path.exists(filepath):
@@ -56,28 +57,26 @@ class StateMachine:
 
         if not face_detected:
             time_away = current_time - self.last_seen_time
-
             if time_away > self.reset_greeting_timeout:
                 self.has_greeted = False
 
-            if self.current_state in [self.STATE_FORTUNE, self.STATE_ADVICE]:
+            if self.current_state in [self.STATE_SHIRT_COLOR, self.STATE_FORTUNE, self.STATE_ADVICE]:
                 if time_away > 15.0: 
                     self.current_state = self.STATE_IDLE
                     self.display_text = ""
-                    self.score_samples = [] 
             else:
                 if time_away > self.face_timeout:
-                    if self.current_state != self.STATE_IDLE:
-                        self.current_state = self.STATE_IDLE
-                        self.display_text = ""
-                        self.score_samples = [] 
-                    return self.current_state, self.display_text
+                    self.current_state = self.STATE_IDLE
+                    self.display_text = ""
+            return self.current_state, self.display_text
 
-        if face_detected and self.current_state in [self.STATE_DETECTING, self.STATE_GREETING]:
+        # เก็บตัวอย่างคะแนน
+        if face_detected and self.current_state in [self.STATE_DETECTING, self.STATE_GREETING, self.STATE_SHIRT_COLOR]:
             if current_time - self.last_sample_time >= 2.0:
                 self.score_samples.append((happiness, energy))
                 self.last_sample_time = current_time
 
+        # --- LOGIC สถานะต่างๆ ---
         if self.current_state == self.STATE_IDLE:
             if face_detected:
                 self.current_state = self.STATE_DETECTING
@@ -89,60 +88,50 @@ class StateMachine:
             if current_time - self.state_start_time >= 1.0:
                 self.current_state = self.STATE_GREETING
                 self.state_start_time = current_time 
-                
                 if not self.has_greeted:
                     time_period = self._get_time_of_day()
-                    daily_greetings = self.greetings.get("daily_greetings", {})
-                    greeting_list = daily_greetings.get(time_period, [{"text": "สวัสดีค่ะ"}])
-                    
-                    chosen_item = random.choice(greeting_list)
-                    self.display_text = chosen_item.get("text", "สวัสดีค่ะ")
+                    greeting_list = self.greetings.get("daily_greetings", {}).get(time_period, [{"text": "สวัสดีค่ะ"}])
+                    self.display_text = random.choice(greeting_list).get("text", "สวัสดีค่ะ")
                     self.has_greeted = True 
                 else:
-                    self.display_text = "พร้อมสแกนบาร์โค้ดหรือคิวอาร์โค้ดค่ะ" 
+                    self.display_text = "พร้อมดูแลคุณแล้วค่ะ"
 
         elif self.current_state == self.STATE_GREETING:
-            if current_time - self.state_start_time >= 3.0 and not self.medicine_reminded:
-                self.display_text = "ถึงเวลาดูแลตัวเองแล้ว อย่าลืมทานยาตามที่หมอสั่งนะคะ \n(สแกนคิวอาร์โค้ดที่ซองยาเพื่อรับคำทำนาย)"
+            elapsed = current_time - self.state_start_time
+            # รอ 3 วิหลังจากทักทาย แล้วเปลี่ยนไปบอกสีเสื้อ
+            if elapsed >= 3.0:
+                self.current_state = self.STATE_SHIRT_COLOR
+                self.state_start_time = current_time
+                self.display_text = self.shirt_color.get_today_color()
+
+        elif self.current_state == self.STATE_SHIRT_COLOR:
+            elapsed = current_time - self.state_start_time
+            # แสดงสีเสื้อไป 5 วินาที หรือจนกว่าจะมีการสแกนยา
+            if elapsed >= 5.0 and not self.medicine_reminded:
+                self.display_text = "อย่าลืมทานยาตามที่คุณหมอสั่งนะคะ \n(สแกนคิวอาร์โค้ดเพื่อรับคำทำนาย)"
                 self.medicine_reminded = True
 
             if barcode_scanned:
                 self.current_state = self.STATE_FORTUNE
                 self.fortune_start_time = current_time 
-                
-                # --- สุ่มเซียมซีและจดจำค่าไว้ (ยังไม่แสดงผลทันที) ---
                 siamese_list = self.fortunes.get("siamese_predictions", [])
                 if siamese_list:
-                    chosen_fortune = random.choice(siamese_list)
-                    self.chosen_fortune_id = str(chosen_fortune.get("id", "?"))
-                    self.chosen_fortune_text = chosen_fortune.get("prediction", "ขอให้โชคดี!")
+                    chosen = random.choice(siamese_list)
+                    self.chosen_fortune_id = str(chosen.get("id", "?"))
+                    self.chosen_fortune_text = chosen.get("prediction", "ขอให้โชคดี!")
                 else:
-                    self.chosen_fortune_id = "1"
-                    self.chosen_fortune_text = "ขอให้เป็นวันที่ดีนะคะ!"
+                    self.chosen_fortune_id = "1"; self.chosen_fortune_text = "ขอให้เป็นวันที่ดี!"
 
         elif self.current_state == self.STATE_FORTUNE:
-            # --- คำนวณเวลาที่ผ่านไปตั้งแต่เริ่มสแกนติด ---
             elapsed = current_time - self.fortune_start_time
-            
             if elapsed < 3.0:
-                # 3 วินาทีแรก: ขึ้นข้อความตื่นเต้น
                 self.display_text = "สแกนสำเร็จ!\nกำลังเขย่าเซียมซี..."
             elif elapsed < 6.0:
-                # วินาทีที่ 3 - 6: บอกเบอร์เซียมซี
                 self.display_text = f"คุณได้เซียมซีใบที่ {self.chosen_fortune_id}"
             elif elapsed < 13.0:
-                # วินาทีที่ 6 - 13: โชว์คำทำนาย (โชว์ 7 วินาที)
                 self.display_text = self.chosen_fortune_text
             else:
-                # เกิน 13 วินาที: เปลี่ยนเป็นคำแนะนำสุขภาพจิต
                 self.current_state = self.STATE_ADVICE
-                self.display_text = self.advisor.get_advice(
-                    self.score_samples, 
-                    happiness, 
-                    energy
-                )
-
-        elif self.current_state == self.STATE_ADVICE:
-            pass 
+                self.display_text = self.advisor.get_advice(self.score_samples, happiness, energy)
 
         return self.current_state, self.display_text
