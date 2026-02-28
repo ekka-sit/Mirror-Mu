@@ -1,0 +1,10 @@
+{
+    "normal": {
+        "energy": 79.22,
+        "happiness": 100.0
+    },
+    "wakeup": {
+        "energy": 40.0,
+        "happiness": 20.0
+    }
+}
