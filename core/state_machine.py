@@ -3,8 +3,6 @@ import json
 import random
 from datetime import datetime
 import os
-
-# --- นำเข้า Advisor ที่เราเพิ่งสร้าง ---
 from core.advisor import Advisor 
 
 class StateMachine:
@@ -23,15 +21,19 @@ class StateMachine:
         self.face_timeout = 2.0  
         self.has_greeted = False
         self.reset_greeting_timeout = 30.0 
+        
+        self.medicine_reminded = False 
 
         self.score_samples = []      
         self.last_sample_time = 0.0  
         self.fortune_start_time = 0.0 
 
+        # --- เพิ่มตัวแปรสำหรับจำเบอร์และคำทำนายเซียมซี ---
+        self.chosen_fortune_id = ""
+        self.chosen_fortune_text = ""
+
         self.greetings = self._load_json("data/greetings.json", {})
         self.fortunes = self._load_json("data/fortunes.json", {})
-        
-        # --- เรียกใช้งานคลาส Advisor ---
         self.advisor = Advisor()
 
     def _load_json(self, filepath, default_data):
@@ -81,10 +83,12 @@ class StateMachine:
                 self.current_state = self.STATE_DETECTING
                 self.state_start_time = current_time
                 self.score_samples = [] 
+                self.medicine_reminded = False 
 
         elif self.current_state == self.STATE_DETECTING:
-            if current_time - self.state_start_time >= 3.0:
+            if current_time - self.state_start_time >= 1.0:
                 self.current_state = self.STATE_GREETING
+                self.state_start_time = current_time 
                 
                 if not self.has_greeted:
                     time_period = self._get_time_of_day()
@@ -98,22 +102,40 @@ class StateMachine:
                     self.display_text = "พร้อมสแกนบาร์โค้ดหรือคิวอาร์โค้ดค่ะ" 
 
         elif self.current_state == self.STATE_GREETING:
+            if current_time - self.state_start_time >= 3.0 and not self.medicine_reminded:
+                self.display_text = "ถึงเวลาดูแลตัวเองแล้ว อย่าลืมทานยาตามที่หมอสั่งนะคะ \n(สแกนคิวอาร์โค้ดที่ซองยาเพื่อรับคำทำนาย)"
+                self.medicine_reminded = True
+
             if barcode_scanned:
                 self.current_state = self.STATE_FORTUNE
                 self.fortune_start_time = current_time 
                 
+                # --- สุ่มเซียมซีและจดจำค่าไว้ (ยังไม่แสดงผลทันที) ---
                 siamese_list = self.fortunes.get("siamese_predictions", [])
                 if siamese_list:
                     chosen_fortune = random.choice(siamese_list)
-                    self.display_text = chosen_fortune.get("prediction", "ขอให้โชคดี!")
+                    self.chosen_fortune_id = str(chosen_fortune.get("id", "?"))
+                    self.chosen_fortune_text = chosen_fortune.get("prediction", "ขอให้โชคดี!")
                 else:
-                    self.display_text = "ขอให้เป็นวันที่ดีนะคะ!"
+                    self.chosen_fortune_id = "1"
+                    self.chosen_fortune_text = "ขอให้เป็นวันที่ดีนะคะ!"
 
         elif self.current_state == self.STATE_FORTUNE:
-            if current_time - self.fortune_start_time >= 7.0:
+            # --- คำนวณเวลาที่ผ่านไปตั้งแต่เริ่มสแกนติด ---
+            elapsed = current_time - self.fortune_start_time
+            
+            if elapsed < 3.0:
+                # 3 วินาทีแรก: ขึ้นข้อความตื่นเต้น
+                self.display_text = "สแกนสำเร็จ!\nกำลังเขย่าเซียมซี..."
+            elif elapsed < 6.0:
+                # วินาทีที่ 3 - 6: บอกเบอร์เซียมซี
+                self.display_text = f"คุณได้เซียมซีใบที่ {self.chosen_fortune_id}"
+            elif elapsed < 13.0:
+                # วินาทีที่ 6 - 13: โชว์คำทำนาย (โชว์ 7 วินาที)
+                self.display_text = self.chosen_fortune_text
+            else:
+                # เกิน 13 วินาที: เปลี่ยนเป็นคำแนะนำสุขภาพจิต
                 self.current_state = self.STATE_ADVICE
-                
-                # --- ย้ายไปเรียกใช้ฟังก์ชันจาก Advisor ---
                 self.display_text = self.advisor.get_advice(
                     self.score_samples, 
                     happiness, 
@@ -124,5 +146,3 @@ class StateMachine:
             pass 
 
         return self.current_state, self.display_text
-
-    # ลบฟังก์ชัน _calculate_and_show_advice เดิมทิ้งไปได้เลยครับ
